@@ -187,12 +187,15 @@ type Incident struct {
 }
 
 // RetestSet is the stable, deterministically ordered set of affected
-// sampling points derived from an incident's propagation.
+// sampling points derived from an incident's propagation. IncidentID links
+// the set back to the anomaly that seeded it so treatment can close exactly
+// that incident instead of every open one.
 type RetestSet struct {
-	ID      string          `json:"id"`
-	JobID   JobID           `json:"job_id"`
-	Members []SamplePointID `json:"members"`
-	Round   int             `json:"round"`
+	ID         string          `json:"id"`
+	IncidentID string          `json:"incident_id,omitempty"`
+	JobID      JobID           `json:"job_id"`
+	Members    []SamplePointID `json:"members"`
+	Round      int             `json:"round"`
 }
 
 // TreatmentRound links a new round to the retest set that triggered it.

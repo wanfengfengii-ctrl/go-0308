@@ -80,9 +80,10 @@ func ComputeMembers(t topology.Topology, seed IncidentSeed) []domain.SamplePoint
 	return out
 }
 
-// RetestSet builds a stable retest set for the given job, round, and members.
-func RetestSet(id string, job domain.JobID, round int, members []domain.SamplePointID) domain.RetestSet {
+// RetestSet builds a stable retest set for the given job, round, and members,
+// linked to the incident that seeded it.
+func RetestSet(id string, job domain.JobID, incidentID string, round int, members []domain.SamplePointID) domain.RetestSet {
 	sorted := append([]domain.SamplePointID(nil), members...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return domain.RetestSet{ID: id, JobID: job, Round: round, Members: sorted}
+	return domain.RetestSet{ID: id, IncidentID: incidentID, JobID: job, Round: round, Members: sorted}
 }

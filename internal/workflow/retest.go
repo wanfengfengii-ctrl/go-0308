@@ -45,7 +45,7 @@ func (s *Service) CreateIncident(job domain.JobID, seed retest.IncidentSeed, clo
 	if err != nil {
 		return domain.Incident{}, domain.RetestSet{}, err
 	}
-	rs := retest.RetestSet(fmt.Sprintf("rs-%d", retSeq+1), job, p.Round, members)
+	rs := retest.RetestSet(fmt.Sprintf("rs-%d", retSeq+1), job, inc.ID, p.Round, members)
 	if err := s.store.CreateRetestSet(rs); err != nil {
 		return domain.Incident{}, domain.RetestSet{}, err
 	}
@@ -94,13 +94,12 @@ func (s *Service) StartTreatment(job domain.JobID, retestID string) (domain.Trea
 	if err := s.store.SaveProgress(job, p); err != nil {
 		return domain.TreatmentRound{}, err
 	}
-	incs, err := s.store.ListIncidents(job)
-	if err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	for _, inc := range incs {
-		if !inc.Closed {
-			_ = s.store.CloseIncident(inc.ID)
+	// Only the incident that seeded this retest set is resolved by the
+	// treatment; other open incidents must remain open so they still block
+	// release until their own retest set is treated.
+	if rs.IncidentID != "" {
+		if err := s.store.CloseIncident(rs.IncidentID); err != nil {
+			return domain.TreatmentRound{}, err
 		}
 	}
 	return tr, nil

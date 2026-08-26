@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 CREATE TABLE IF NOT EXISTS retest_sets (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
+  incident_id TEXT NOT NULL DEFAULT '',
   round INTEGER NOT NULL,
   members_json TEXT NOT NULL
 );

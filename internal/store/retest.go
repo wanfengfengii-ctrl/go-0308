@@ -84,14 +84,14 @@ func (s *Store) CreateRetestSet(rs domain.RetestSet) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO retest_sets (id, job_id, round, members_json) VALUES (?, ?, ?, ?)`,
-		rs.ID, string(rs.JobID), rs.Round, members)
+	_, err = s.db.Exec(`INSERT INTO retest_sets (id, job_id, incident_id, round, members_json) VALUES (?, ?, ?, ?, ?)`,
+		rs.ID, string(rs.JobID), rs.IncidentID, rs.Round, members)
 	return err
 }
 
 // ListRetestSets returns the retest sets for a job ordered by id.
 func (s *Store) ListRetestSets(job domain.JobID) ([]domain.RetestSet, error) {
-	rows, err := s.db.Query(`SELECT id, job_id, round, members_json FROM retest_sets WHERE job_id = ? ORDER BY id`, string(job))
+	rows, err := s.db.Query(`SELECT id, job_id, incident_id, round, members_json FROM retest_sets WHERE job_id = ? ORDER BY id`, string(job))
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *Store) ListRetestSets(job domain.JobID) ([]domain.RetestSet, error) {
 	for rows.Next() {
 		var rs domain.RetestSet
 		var members string
-		if err := rows.Scan(&rs.ID, &rs.JobID, &rs.Round, &members); err != nil {
+		if err := rows.Scan(&rs.ID, &rs.JobID, &rs.IncidentID, &rs.Round, &members); err != nil {
 			return nil, err
 		}
 		if err := decodeJSON(members, &rs.Members); err != nil {
@@ -115,8 +115,8 @@ func (s *Store) ListRetestSets(job domain.JobID) ([]domain.RetestSet, error) {
 func (s *Store) GetRetestSet(id string) (domain.RetestSet, error) {
 	var rs domain.RetestSet
 	var members string
-	err := s.db.QueryRow(`SELECT id, job_id, round, members_json FROM retest_sets WHERE id = ?`, id).
-		Scan(&rs.ID, &rs.JobID, &rs.Round, &members)
+	err := s.db.QueryRow(`SELECT id, job_id, incident_id, round, members_json FROM retest_sets WHERE id = ?`, id).
+		Scan(&rs.ID, &rs.JobID, &rs.IncidentID, &rs.Round, &members)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.RetestSet{}, ErrNotFound
 	}
