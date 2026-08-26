@@ -127,18 +127,17 @@ func (s *Service) applyIsolation(ev domain.Evidence, p store.Progress, targets d
 }
 
 // applyFlush accumulates the continuous compliance window over flow and
-// turbidity readings, and the cumulative turnover volume.
+// turbidity readings, and the cumulative turnover volume. The reading is
+// persisted only after every constraint that can fail has been checked, so a
+// failing submission (for example a turnover target of zero) leaves no partial
+// reading in the timeline and a replay of the same operation does not append
+// duplicate failed records.
 func (s *Service) applyFlush(ev domain.Evidence, p store.Progress, targets domain.JobTargets) (store.Progress, error) {
 	if len(ev.Values) < 2 {
 		return p, &domain.ValidationError{Field: "values", Reason: "flow and turbidity required"}
 	}
 	flow := ev.Values[0]
 	turbidity := ev.Values[1]
-	if err := s.store.RecordMeasurement(ev.JobID, domain.MeasurementSeries{
-		JobID: ev.JobID, InstrumentID: ev.InstrumentID, Clock: ev.Clock, Readings: ev.Values,
-	}, "flush"); err != nil {
-		return p, err
-	}
 
 	dt := ev.Clock - p.Clock
 	flowVol := flow.Value * dt
@@ -154,6 +153,10 @@ func (s *Service) applyFlush(ev domain.Evidence, p store.Progress, targets domai
 	}
 	p.Clock = ev.Clock
 
+	// Resolve the turnover requirement before persisting anything: a window
+	// that cannot close because of an invalid target must fail without writing
+	// a reading, so failed evidence never pollutes the historical timeline.
+	canAdvance := false
 	if p.FlushWindow >= targets.MinWindowCount {
 		// The flush may only close once the cumulative flow has replaced the
 		// required pipeline volume (the turnover factor).
@@ -169,12 +172,22 @@ func (s *Service) applyFlush(ev domain.Evidence, p store.Progress, targets domai
 		if err != nil {
 			return p, err
 		}
-		if hydraulic.MetTurnover(int(p.TurnoverCum), required) {
-			return s.advance(ev.JobID, p, ev.OperationID, struct {
-				Stage  string `json:"stage"`
-				Window int64  `json:"window"`
-			}{string(ev.Stage), p.FlushWindow})
-		}
+		canAdvance = hydraulic.MetTurnover(int(p.TurnoverCum), required)
+	}
+
+	// All checks passed; the reading is now safe to persist. A submission that
+	// failed validation above returns before this point, leaving no trace.
+	if err := s.store.RecordMeasurement(ev.JobID, domain.MeasurementSeries{
+		JobID: ev.JobID, InstrumentID: ev.InstrumentID, Clock: ev.Clock, Readings: ev.Values,
+	}, "flush"); err != nil {
+		return p, err
+	}
+
+	if canAdvance {
+		return s.advance(ev.JobID, p, ev.OperationID, struct {
+			Stage  string `json:"stage"`
+			Window int64  `json:"window"`
+		}{string(ev.Stage), p.FlushWindow})
 	}
 	if err := s.store.SaveProgress(ev.JobID, p); err != nil {
 		return p, err
