@@ -7,11 +7,18 @@ import (
 	"example.com/potable-water-pipeline/internal/domain"
 )
 
-// SaveLease persists a lease. The unique index on resource enforces a single
-// outstanding lease per resource across restarts.
+// SaveLease persists a lease, replacing any existing outstanding lease for the
+// same resource. The unique index on resource enforces a single outstanding
+// lease per resource across restarts; an expired prior lease is superseded
+// rather than blocking re-acquisition by the next holder.
 func (s *Store) SaveLease(l domain.ResourceLease) error {
 	_, err := s.db.Exec(`
-INSERT INTO leases (id, resource, holder, clock, expires) VALUES (?, ?, ?, ?, ?)`,
+INSERT INTO leases (id, resource, holder, clock, expires) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(resource) DO UPDATE SET
+  id = excluded.id,
+  holder = excluded.holder,
+  clock = excluded.clock,
+  expires = excluded.expires`,
 		string(l.ID), l.Resource, l.Holder, l.Clock, l.Expires)
 	return err
 }
