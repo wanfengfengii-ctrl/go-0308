@@ -45,12 +45,22 @@ func New(st *store.Store, catalog *rules.Catalog) (*Service, error) {
 }
 
 // CreateJob locks a topology and persists the new job. It is idempotent on the
-// job id: replaying the same request returns the already-created job.
+// job id: replaying the same request returns the already-created job. A replay
+// that changes the topology, targets, or rule version yields a stable
+// ConflictContentMismatch rather than silently returning the stale locked
+// summary, so downstream stages always execute against the locked content.
 func (s *Service) CreateJob(id domain.JobID, req domain.CreateJobRequest) (domain.LockedJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if existing, err := s.store.GetJob(id); err == nil {
+		reason, err := s.createJobConflict(id, existing, req)
+		if err != nil {
+			return domain.LockedJob{}, err
+		}
+		if reason != "" {
+			return domain.LockedJob{}, &domain.ConflictError{Code: domain.ConflictContentMismatch, Reason: reason}
+		}
 		return existing, nil
 	} else if err != store.ErrNotFound {
 		return domain.LockedJob{}, err
@@ -72,6 +82,49 @@ func (s *Service) CreateJob(id domain.JobID, req domain.CreateJobRequest) (domai
 		return domain.LockedJob{}, err
 	}
 	return res.Job, nil
+}
+
+// createJobConflict returns a non-empty stable reason when a create-job replay
+// carries content that differs from the already-locked job. An empty reason
+// means the replay is content-identical and the caller may return the existing
+// job. The comparison reuses the same normalization and digest computed at
+// lock time so that semantically equal content always matches, while a changed
+// field (e.g. a section length) produces a stable conflict.
+func (s *Service) createJobConflict(id domain.JobID, existing domain.LockedJob, req domain.CreateJobRequest) (string, error) {
+	if req.RuleVer != existing.RuleVersion {
+		return "rule_version", nil
+	}
+	t := topology.Topology{
+		Nodes:      req.Topology.Nodes,
+		Sections:   req.Topology.Sections,
+		Valves:     req.Topology.Valves,
+		Outlets:    req.Topology.Outlets,
+		Injections: req.Topology.Injections,
+		Sampling:   req.Topology.Sampling,
+	}
+	locked, err := topology.FromTopology(t)
+	if err != nil {
+		return "", err
+	}
+	if locked.Digest != existing.TopologyDigest {
+		return "topology", nil
+	}
+	storedTargets, err := s.store.GetTargets(id)
+	if err != nil {
+		return "", err
+	}
+	wantDigest, err := domain.Digest(req.Targets)
+	if err != nil {
+		return "", err
+	}
+	gotDigest, err := domain.Digest(storedTargets)
+	if err != nil {
+		return "", err
+	}
+	if wantDigest != gotDigest {
+		return "targets", nil
+	}
+	return "", nil
 }
 
 // GetJob returns the current job summary.
