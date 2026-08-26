@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"example.com/potable-water-pipeline/internal/domain"
@@ -55,53 +56,87 @@ func (s *Service) CreateIncident(job domain.JobID, seed retest.IncidentSeed, clo
 // StartTreatment creates a strictly increasing treatment round for a retest
 // set, resets the job to the sampling stage for re-sampling, and closes the
 // incident that triggered it. Old-round evidence is preserved as history.
+//
+// Starting treatment is idempotent per retest set: a retried "start treatment"
+// request (frontend or gateway replay) returns the round that was already
+// created instead of minting a strictly increasing new one, so the in-progress
+// round is not squeezed into history by a duplicate start.
 func (s *Service) StartTreatment(job domain.JobID, retestID string) (domain.TreatmentRound, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	p, err := s.store.LoadProgress(job)
-	if err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	rs, err := s.store.GetRetestSet(retestID)
-	if err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	if rs.JobID != job {
-		return domain.TreatmentRound{}, &domain.ConflictError{Code: domain.ConflictRound, Reason: "retest set belongs to another job"}
-	}
-	maxRound, err := s.store.MaxRound(job)
-	if err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	newRound := maxRound + 1
-	if newRound <= p.Round {
-		newRound = p.Round + 1
-	}
-	tr := domain.TreatmentRound{
-		ID:       domain.RoundID(fmt.Sprintf("tr-%d", newRound)),
-		JobID:    job,
-		RetestID: retestID,
-		Round:    newRound,
-	}
-	if err := s.store.CreateTreatmentRound(tr); err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	// Reset to sampling for the new round and close the triggering incident.
-	p.Round = newRound
-	p.Stage = domain.StageSampling
-	p.Clock++
-	if err := s.store.SaveProgress(job, p); err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	incs, err := s.store.ListIncidents(job)
-	if err != nil {
-		return domain.TreatmentRound{}, err
-	}
-	for _, inc := range incs {
-		if !inc.Closed {
-			_ = s.store.CloseIncident(inc.ID)
+	// The retest set is the idempotency key for "start treatment": each retest
+	// set starts at most one treatment round. The operation id is derived from
+	// the (job, retest set) pair and the digest is the canonical summary of
+	// the same pair, so a replay with identical content returns the original
+	// round. The key is stable across retries even when the caller does not
+	// echo a client operation id.
+	operationID := fmt.Sprintf("start-treatment:%s:%s", job, retestID)
+	digest := domain.MustDigest(struct {
+		JobID    domain.JobID `json:"job_id"`
+		RetestID string       `json:"retest_id"`
+	}{job, retestID})
+
+	result, err := s.idempotent(operationID, digest, job, func() (any, error) {
+		p, err := s.store.LoadProgress(job)
+		if err != nil {
+			return nil, err
 		}
+		rs, err := s.store.GetRetestSet(retestID)
+		if err != nil {
+			return nil, err
+		}
+		if rs.JobID != job {
+			return nil, &domain.ConflictError{Code: domain.ConflictRound, Reason: "retest set belongs to another job"}
+		}
+		maxRound, err := s.store.MaxRound(job)
+		if err != nil {
+			return nil, err
+		}
+		newRound := maxRound + 1
+		if newRound <= p.Round {
+			newRound = p.Round + 1
+		}
+		tr := domain.TreatmentRound{
+			ID:       domain.RoundID(fmt.Sprintf("tr-%d", newRound)),
+			JobID:    job,
+			RetestID: retestID,
+			Round:    newRound,
+		}
+		if err := s.store.CreateTreatmentRound(tr); err != nil {
+			return nil, err
+		}
+		// Reset to sampling for the new round and close the triggering incident.
+		p.Round = newRound
+		p.Stage = domain.StageSampling
+		p.Clock++
+		if err := s.store.SaveProgress(job, p); err != nil {
+			return nil, err
+		}
+		incs, err := s.store.ListIncidents(job)
+		if err != nil {
+			return nil, err
+		}
+		for _, inc := range incs {
+			if !inc.Closed {
+				_ = s.store.CloseIncident(inc.ID)
+			}
+		}
+		return tr, nil
+	})
+	if err != nil {
+		return domain.TreatmentRound{}, err
+	}
+	// Unmarshal the persisted (or freshly produced) round into the concrete
+	// type so callers keep getting a TreatmentRound, whether the idempotent
+	// receipt returned the original result or this call created it.
+	b, err := json.Marshal(result)
+	if err != nil {
+		return domain.TreatmentRound{}, err
+	}
+	var tr domain.TreatmentRound
+	if err := json.Unmarshal(b, &tr); err != nil {
+		return domain.TreatmentRound{}, err
 	}
 	return tr, nil
 }
