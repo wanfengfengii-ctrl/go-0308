@@ -2,6 +2,8 @@ package lease
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"example.com/potable-water-pipeline/internal/domain"
@@ -24,15 +26,39 @@ func NewManager() *Manager {
 
 // Hydrate restores outstanding leases from durable storage (for example, after
 // a service restart). It replaces the in-memory lease table with the supplied
-// leases and advances the id sequence past their highest numeric suffix.
+// leases and advances the id sequence past the highest numeric suffix among
+// them. Using the max suffix — not the outstanding count — keeps newly minted
+// lease ids strictly greater than every previously issued id, so an acquire
+// after restart never collides with a still-persisted lease that an earlier
+// (now released) acquire happened to sit beside. Only outstanding leases are
+// recovered (released leases were deleted from durable storage on release), so
+// the seq must be derived from their ids rather than their count.
 func (m *Manager) Hydrate(leases []domain.ResourceLease) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.leases = make(map[string]domain.ResourceLease, len(leases))
-	m.seq = int64(len(leases))
+	m.seq = 0
 	for _, l := range leases {
 		m.leases[l.Resource] = l
+		if n, ok := parseLeaseSeq(string(l.ID)); ok && n > m.seq {
+			m.seq = n
+		}
 	}
+}
+
+// parseLeaseSeq extracts the trailing integer from a "lease-N" id. It reports
+// ok=false for any id that does not match the canonical shape, leaving the
+// caller to treat such rows as not advancing the sequence.
+func parseLeaseSeq(id string) (int64, bool) {
+	const prefix = "lease-"
+	if !strings.HasPrefix(id, prefix) {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(id, prefix), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Acquire attempts to hold resource exclusively for holder until expires. It
