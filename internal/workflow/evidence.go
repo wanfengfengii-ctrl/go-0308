@@ -23,13 +23,20 @@ func (s *Service) AcquireLease(job domain.JobID, resource, holder string, clock,
 }
 
 // ReleaseLease returns a resource to the pool. Only the current, unexpired
-// holder may release.
+// holder may release. The holder is checked against the durable lease before
+// any mutation so a rejected (wrong-holder) release cannot strip the persisted
+// hold and let the resource be reacquired after a restart.
 func (s *Service) ReleaseLease(job domain.JobID, resource, holder string, clock int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l, ok, err := s.store.LeaseForResource(resource); err != nil {
+	l, ok, err := s.store.LeaseForResource(resource)
+	if err != nil {
 		return err
-	} else if ok {
+	}
+	if ok && l.Holder != holder {
+		return &domain.ConflictError{Code: domain.ConflictLeaseBusy, Reason: resource}
+	}
+	if ok {
 		if err := s.store.DeleteLease(l.ID); err != nil {
 			return err
 		}
