@@ -213,11 +213,12 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_person ON reviews(job_id, person_id);
 
 CREATE TABLE IF NOT EXISTS receipts (
-  operation_id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
   digest TEXT NOT NULL,
   commit_number INTEGER NOT NULL,
-  result_json TEXT NOT NULL
+  result_json TEXT NOT NULL,
+  PRIMARY KEY (job_id, operation_id)
 );
 
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);

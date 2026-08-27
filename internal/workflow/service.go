@@ -112,10 +112,12 @@ func (s *Service) Retests(id domain.JobID) ([]domain.RetestSet, error) {
 
 // idempotent guards a write operation with an operation id and canonical
 // digest. Replaying the same content returns the original result; different
-// content for the same operation id yields a stable conflict.
+// content for the same operation id yields a stable conflict. Operation ids
+// are scoped per job: the lookup is partitioned by job so that the same local
+// id replayed by independent jobs never cross-collides.
 func (s *Service) idempotent(operationID, digest string, job domain.JobID, fn func() (any, error)) (any, error) {
 	if operationID != "" {
-		gotDigest, resultJSON, found, err := s.store.ReceiptResult(operationID)
+		gotDigest, resultJSON, found, err := s.store.ReceiptResult(job, operationID)
 		if err != nil {
 			return nil, err
 		}
