@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"example.com/potable-water-pipeline/internal/domain"
@@ -25,7 +26,8 @@ type Service struct {
 	leases     *lease.Manager
 }
 
-// New builds a Service backed by the given store and rule catalog.
+// New builds a Service backed by the given store and rule catalog and restores
+// outstanding leases from durable storage so occupancy survives a restart.
 func New(st *store.Store, catalog *rules.Catalog) (*Service, error) {
 	s := &Service{
 		store:      st,
@@ -34,7 +36,36 @@ func New(st *store.Store, catalog *rules.Catalog) (*Service, error) {
 		arbitrator: verdict.NewArbitrator(),
 		leases:     lease.NewManager(),
 	}
+	if err := s.recoverLeases(); err != nil {
+		return nil, fmt.Errorf("recover leases: %w", err)
+	}
 	return s, nil
+}
+
+// recoverLeases reloads outstanding leases from the store into the in-memory
+// lease table after a restart. Expired leases are dropped from storage so a
+// later acquire does not trip the unique-resource index; unexpired leases are
+// hydrated so a concurrent acquire reports lease_busy rather than 500.
+func (s *Service) recoverLeases() error {
+	leases, err := s.store.ListLeases()
+	if err != nil {
+		return err
+	}
+	live := make([]domain.ResourceLease, 0, len(leases))
+	for _, l := range leases {
+		// ListLeases is point-in-time; drop anything already past its
+		// expiry so the recovered table matches what a holder could still
+		// validly use, and keep the durable table in sync.
+		if l.Expires <= l.Clock {
+			if err := s.store.DeleteLease(l.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		live = append(live, l)
+	}
+	s.leases.Hydrate(live)
+	return nil
 }
 
 // CreateJob locks a topology and persists the new job. It is idempotent on the
