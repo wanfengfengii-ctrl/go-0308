@@ -1,0 +1,10 @@
+{
+  "name": "potable-water-pipeline-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Frontend for the potable water pipeline disinfection release service",
+  "scripts": {
+    "build": "node build.mjs"
+  }
+}
