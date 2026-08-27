@@ -114,7 +114,14 @@ func (s *Service) buildSnapshot(job domain.JobID) (verdict.Snapshot, error) {
 	if err != nil {
 		return verdict.Snapshot{}, err
 	}
+	// Terminal arbitration considers only the current treatment round's
+	// samples. A prior round's passing result is preserved as history but
+	// must not form a current conclusion, so a round-two sample with no
+	// qualifying result cannot be released on the strength of round one.
 	for _, sm := range samples {
+		if sm.Round != p.Round {
+			continue
+		}
 		results, err := s.store.LabResultsForSample(sm.ID)
 		if err != nil {
 			return verdict.Snapshot{}, err
